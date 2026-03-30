@@ -55,6 +55,6 @@ PREFIX = os.environ.get("DATASET_PREFIX", "HI-Medium")
 
 # Instantiate a global instance to be used by the FastAPI router
 detector = GraphDetector(
-    model_path=f"models/gnn_model_{PREFIX}.pt", 
-    graph_path=f"output/{PREFIX}/nexuswatch_graph.pt"
+    model_path=f"../models/gnn_model_{PREFIX}.pt", 
+    graph_path=f"../output/{PREFIX}/nexuswatch_graph.pt"
 )
