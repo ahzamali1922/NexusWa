@@ -6,6 +6,15 @@ from pathlib import Path
 # Import the model architecture we created in Step 2
 from models.gnn_model import NexusGraphSAGE
 
+# Dataset-specific thresholds (from evaluation)
+threshold_map = {
+    "HI-Small": 0.8,
+    "HI-Medium": 0.8,
+    "LI-Small": 0.8,
+    "LI-Medium": 0.8,
+    "LI-Large": 0.7
+}
+
 class GraphDetector:
     def __init__(self, model_path: str, graph_path: str):
         self.device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
@@ -30,7 +39,7 @@ class GraphDetector:
         
         print(f"✅ Graph & Model loaded successfully on {self.device}")
 
-    def detect_anomalies(self, threshold: float = 0.85):
+    def detect_anomalies(self):
         """Runs a forward pass and returns nodes above the risk threshold."""
         with torch.no_grad():
             # The real forward pass!
@@ -38,6 +47,14 @@ class GraphDetector:
             
             # Convert raw logits to probabilities (0.0 to 1.0) using Sigmoid
             probabilities = torch.sigmoid(logits).squeeze()
+
+            # Get dataset prefix
+            prefix = os.environ.get("DATASET_PREFIX", "HI-Medium")
+
+            # Select best threshold
+            threshold = threshold_map.get(prefix, 0.7)
+
+            print(f"Using threshold: {threshold} for {prefix}")
             
             # Find nodes that cross the risk threshold
             flagged_indices = (probabilities > threshold).nonzero(as_tuple=True)[0]

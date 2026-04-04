@@ -46,7 +46,8 @@ CPU_CORES = multiprocessing.cpu_count()   # 16 on Xeon W-2245
 # ─────────────────────────────────────────────────────────────────────────────
 PREFIX = os.environ.get("DATASET_PREFIX", "HI-Medium")
 
-DATA_DIR   = Path(r"C:\Users\Mohvijay-sch\Desktop\NexusWatch\Dataset")
+DATA_DIR = Path(__file__).resolve().parent / "Dataset"
+print(f"📂 Using dataset path: {DATA_DIR}")
 OUT_DIR    = Path(f"./output/{PREFIX}")
 OUT_DIR.mkdir(parents=True, exist_ok=True)
 
