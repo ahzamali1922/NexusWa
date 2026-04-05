@@ -1,16 +1,15 @@
 # nexuswatch_graph_builder.py
 import pandas as pd
 import numpy as np
-import torch
-from torch_geometric.data import Data
+import torch # type: ignore
+from torch_geometric.data import Data # type: ignore
 from pathlib import Path
 import time
-from sklearn.preprocessing import StandardScaler
+from sklearn.preprocessing import StandardScaler # type: ignore
+import os
 
 print("Starting Feature-Rich Graph Construction...")
 t0 = time.time()
-
-import os
 
 # Paths - Updated to match your ingestion pipeline's folder structure
 PREFIX = os.environ.get("DATASET_PREFIX", "HI-Medium") # Default to HI-Medium if not set
@@ -54,9 +53,6 @@ print("Engineering Node Features...")
 ordered_accounts = pd.DataFrame({'Account Number': unique_accounts})
 node_features_df = ordered_accounts.merge(accounts_df, on='Account Number', how='left')
 
-# Clean Bank ID
-node_features_df['Bank ID'] = pd.to_numeric(node_features_df['Bank ID'], errors='coerce').fillna(0)
-
 # One-Hot Encode Entity Type
 entity_dummies = pd.get_dummies(node_features_df['Entity Type'], prefix='Entity', dummy_na=True)
 
@@ -77,7 +73,8 @@ node_features_df.fillna({'out_degree': 0, 'total_sent': 0, 'in_degree': 0, 'tota
 node_features_df['total_sent'] = np.log1p(node_features_df['total_sent'])
 node_features_df['total_received'] = np.log1p(node_features_df['total_received'])
 
-numeric_features = node_features_df[['Bank ID', 'out_degree', 'total_sent', 'in_degree', 'total_received']]
+# FIX: Removed 'Bank ID' from standard scaling since it is categorical
+numeric_features = node_features_df[['out_degree', 'total_sent', 'in_degree', 'total_received']]
 scaler = StandardScaler()
 scaled_numeric = scaler.fit_transform(numeric_features)
 

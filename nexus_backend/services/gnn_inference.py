@@ -1,10 +1,10 @@
 # services/gnn_inference.py
-import torch
+import torch # type: ignore
 import os
 from pathlib import Path
 
-# Import the model architecture we created in Step 2
-from models.gnn_model import NexusGraphSAGE
+# Import the updated model architecture
+from models.gnn_model import NexusGraph
 
 # Dataset-specific thresholds (from evaluation)
 threshold_map = {
@@ -20,21 +20,22 @@ class GraphDetector:
         self.device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
         
         print(f"Loading Graph from: {graph_path}...")
-        # 1. Load the Graph (remembering weights_only=False for PyG objects)
+        # 1. Load the Graph
         self.graph = torch.load(graph_path, weights_only=False).to(self.device)
         
         print(f"Loading Model from: {model_path}...")
-        # 2. Initialize the Model architecture dynamically based on node features
-        self.model = NexusGraphSAGE(
+        # 2. Initialize the Model dynamically (Fixed hidden channels and added edge_dim)
+        self.model = NexusGraph(
             in_channels=self.graph.num_node_features, 
-            hidden_channels=64, 
+            edge_dim=self.graph.num_edge_features,
+            hidden_channels=128, 
             out_channels=1
         ).to(self.device)
         
         # 3. Load the trained weights
         self.model.load_state_dict(torch.load(model_path, map_location=self.device, weights_only=True))
         
-        # 4. Set model to evaluation mode (turns off dropout, etc.)
+        # 4. Set model to evaluation mode
         self.model.eval()
         
         print(f"✅ Graph & Model loaded successfully on {self.device}")
@@ -42,8 +43,8 @@ class GraphDetector:
     def detect_anomalies(self):
         """Runs a forward pass and returns nodes above the risk threshold."""
         with torch.no_grad():
-            # The real forward pass!
-            logits = self.model(self.graph.x, self.graph.edge_index)
+            # Passed edge_attr here!
+            logits = self.model(self.graph.x, self.graph.edge_index, self.graph.edge_attr)
             
             # Convert raw logits to probabilities (0.0 to 1.0) using Sigmoid
             probabilities = torch.sigmoid(logits).squeeze()

@@ -1,29 +1,29 @@
 # models/gnn_model.py
-import torch
-import torch.nn.functional as F
-from torch_geometric.nn import SAGEConv
+import torch # type: ignore
+import torch.nn.functional as F # type: ignore
+from torch_geometric.nn import TransformerConv # type: ignore
 
-class NexusGraphSAGE(torch.nn.Module):
-    def __init__(self, in_channels: int, hidden_channels: int = 128, out_channels: int = 1):
-        super(NexusGraphSAGE, self).__init__()
+class NexusGraph(torch.nn.Module):
+    def __init__(self, in_channels: int, edge_dim: int, hidden_channels: int = 128, out_channels: int = 1):
+        super(NexusGraph, self).__init__()
 
-        # Graph layers
-        self.conv1 = SAGEConv(in_channels, hidden_channels)
-        self.conv2 = SAGEConv(hidden_channels, hidden_channels // 2)
+        # Graph layers using TransformerConv to support edge features natively
+        self.conv1 = TransformerConv(in_channels, hidden_channels, edge_dim=edge_dim)
+        self.conv2 = TransformerConv(hidden_channels, hidden_channels // 2, edge_dim=edge_dim)
 
         # Classifier
         self.classifier = torch.nn.Linear(hidden_channels // 2, out_channels)
 
-    def forward(self, x, edge_index):
+    def forward(self, x, edge_index, edge_attr):
         # 🔹 Layer 1
-        x = self.conv1(x, edge_index)
+        x = self.conv1(x, edge_index, edge_attr)
         x = F.relu(x)
-        x = F.dropout(x, p=0.5, training=self.training)  # 🔥 stronger dropout
+        x = F.dropout(x, p=0.5, training=self.training)
 
         # 🔹 Layer 2
-        x = self.conv2(x, edge_index)
+        x = self.conv2(x, edge_index, edge_attr)
         x = F.relu(x)
-        x = F.dropout(x, p=0.5, training=self.training)  # 🔥 ADD THIS (VERY IMPORTANT)
+        x = F.dropout(x, p=0.5, training=self.training)
 
         # 🔹 Output
         logits = self.classifier(x)
