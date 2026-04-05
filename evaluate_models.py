@@ -12,7 +12,7 @@ def evaluate_all():
     device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
     print(f"🚀 Evaluating on device: {device}\n")
 
-    # Put the loop back in to run through all datasets
+    # Loop through all datasets
     prefixes = ["HI-Small", "HI-Medium", "LI-Small", "LI-Medium", "LI-Large"]
     thresholds_to_test = [0.3, 0.4, 0.5, 0.6, 0.7, 0.8, 0.9]
 
@@ -32,10 +32,11 @@ def evaluate_all():
         # 1. Load Data
         graph_data = torch.load(graph_path, weights_only=False).to(device)
         
-        # 2. Initialize Model (Added edge_dim)
+        # 2. Initialize Model
         model = NexusGraph(
             in_channels=graph_data.num_node_features,
-            edge_dim=graph_data.num_edge_features
+            edge_dim=graph_data.num_edge_features,
+            hidden_channels=256  # MATCHES the new brain capacity
         ).to(device)
         
         model.load_state_dict(torch.load(model_path, map_location=device, weights_only=True))
@@ -44,7 +45,7 @@ def evaluate_all():
         # 3. Setup Mini-Batch Inference
         eval_loader = NeighborLoader(
             graph_data,
-            num_neighbors=[-1, -1],  # 2 hops for 2 layers
+            num_neighbors=[-1, -1, -1],  # UPDATED: 3 hops for the 3 new layers
             input_nodes=graph_data.test_mask, # Evaluate ONLY on test_mask
             batch_size=4096,             
             shuffle=False,
