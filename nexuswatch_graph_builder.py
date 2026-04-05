@@ -1,18 +1,18 @@
 # nexuswatch_graph_builder.py
 import pandas as pd
 import numpy as np
-import torch # type: ignore
-from torch_geometric.data import Data # type: ignore
+import torch
+from torch_geometric.data import Data
 from pathlib import Path
 import time
-from sklearn.preprocessing import StandardScaler # type: ignore
+from sklearn.preprocessing import StandardScaler
 import os
+import gc
 
 print("Starting Feature-Rich Graph Construction...")
 t0 = time.time()
 
-# Paths - Updated to match your ingestion pipeline's folder structure
-PREFIX = os.environ.get("DATASET_PREFIX", "HI-Medium") # Default to HI-Medium if not set
+PREFIX = os.environ.get("DATASET_PREFIX", "HI-Medium")
 OUT_DIR = Path(f"./output/{PREFIX}")
 
 accounts_file = OUT_DIR / "accounts.parquet"
@@ -23,7 +23,7 @@ print("Loading Parquet files...")
 accounts_df = pd.read_parquet(accounts_file)
 trans_df = pd.read_parquet(trans_file)
 
-# 2. Map Account Strings to Integer IDs (0 to N-1)
+# 2. Map Account Strings to Integer IDs
 print("Mapping node IDs...")
 unique_accounts = accounts_df['Account Number'].unique()
 account_mapping = {acc: i for i, acc in enumerate(unique_accounts)}
@@ -34,7 +34,7 @@ src = trans_df['From Account'].map(account_mapping).values
 dst = trans_df['To Account'].map(account_mapping).values
 edge_index = torch.tensor(np.vstack((src, dst)), dtype=torch.long)
 
-# 4. Define Node Labels (1 = Fraudulent, 0 = Legitimate)
+# 4. Define Node Labels
 print("Assigning node labels...")
 num_nodes = len(unique_accounts)
 node_labels = torch.zeros(num_nodes, dtype=torch.float)
@@ -45,75 +45,109 @@ fraud_indices = [account_mapping[acc] for acc in fraud_accounts if acc in accoun
 node_labels[fraud_indices] = 1.0
 
 # ==========================================
-# 5. BUILD NODE FEATURES (x)
+# 5. DATA SPLITTING (TRAIN/VAL/TEST MASKS)
+# ==========================================
+print("Generating Train/Val/Test masks (70/15/15)...")
+indices = np.arange(num_nodes)
+np.random.shuffle(indices)
+
+train_end = int(0.70 * num_nodes)
+val_end = int(0.85 * num_nodes)
+
+train_mask = torch.zeros(num_nodes, dtype=torch.bool)
+val_mask = torch.zeros(num_nodes, dtype=torch.bool)
+test_mask = torch.zeros(num_nodes, dtype=torch.bool)
+
+train_mask[indices[:train_end]] = True
+val_mask[indices[train_end:val_end]] = True
+test_mask[indices[val_end:]] = True
+
+# ==========================================
+# 6. BUILD NODE FEATURES (x)
 # ==========================================
 print("Engineering Node Features...")
-
-# A. Base Account Features (Align exactly with account_mapping)
 ordered_accounts = pd.DataFrame({'Account Number': unique_accounts})
 node_features_df = ordered_accounts.merge(accounts_df, on='Account Number', how='left')
-
-# One-Hot Encode Entity Type
 entity_dummies = pd.get_dummies(node_features_df['Entity Type'], prefix='Entity', dummy_na=True)
 
-# B. Aggregated Transaction Features (Degree & Volume)
-print("Aggregating transaction volumes per account...")
 out_stats = trans_df.groupby('From Account')['Amount Paid'].agg(['count', 'sum']).rename(columns={'count': 'out_degree', 'sum': 'total_sent'})
 in_stats = trans_df.groupby('To Account')['Amount Received'].agg(['count', 'sum']).rename(columns={'count': 'in_degree', 'sum': 'total_received'})
 
-# Merge stats back to nodes
 node_features_df = node_features_df.merge(out_stats, left_on='Account Number', right_index=True, how='left')
 node_features_df = node_features_df.merge(in_stats, left_on='Account Number', right_index=True, how='left')
-
-# Fill NaNs for accounts with no in/out transactions
 node_features_df.fillna({'out_degree': 0, 'total_sent': 0, 'in_degree': 0, 'total_received': 0}, inplace=True)
 
-# C. Log Transform & Scale
-# Neural networks hate large unscaled numbers (like millions of dollars). We use log1p: log(1 + x)
 node_features_df['total_sent'] = np.log1p(node_features_df['total_sent'])
 node_features_df['total_received'] = np.log1p(node_features_df['total_received'])
 
-# FIX: Removed 'Bank ID' from standard scaling since it is categorical
 numeric_features = node_features_df[['out_degree', 'total_sent', 'in_degree', 'total_received']]
 scaler = StandardScaler()
 scaled_numeric = scaler.fit_transform(numeric_features)
 
-# Combine numeric and one-hot encoded features
 x_numpy = np.hstack([scaled_numeric, entity_dummies.values])
 x = torch.tensor(x_numpy, dtype=torch.float)
-print(f"Node feature matrix shape: {x.shape}")
+
+# Free up memory before heavy edge engineering
+del ordered_accounts
+del node_features_df
+del entity_dummies
+del numeric_features
+gc.collect()
 
 # ==========================================
-# 6. BUILD EDGE FEATURES (edge_attr)
+# 7. BUILD EDGE FEATURES (edge_attr) - MEMORY OPTIMIZED
 # ==========================================
 print("Engineering Edge Features...")
 
-# Log transform the specific transaction amount
-trans_df['log_Amount'] = np.log1p(trans_df['Amount Paid'].fillna(0))
+# 1. Log transform & downcast to float32 to save 50% memory
+trans_df['log_Amount'] = np.log1p(trans_df['Amount Paid'].fillna(0)).astype(np.float32)
 
-# One-Hot Encode Payment Format
-format_dummies = pd.get_dummies(trans_df['Payment Format'], prefix='Fmt')
+# 2. One-Hot Encode Payment Format (cast directly to float32)
+format_dummies = pd.get_dummies(trans_df['Payment Format'], prefix='Fmt', dtype=np.float32)
 
-# Combine edge features (Amount, Hour, DayOfWeek + Payment Formats)
+# 3. Combine edge features (downcast Hour/DayOfWeek)
 edge_features_df = pd.concat([
-    trans_df[['log_Amount', 'Hour', 'DayOfWeek']].fillna(0), 
+    trans_df[['log_Amount', 'Hour', 'DayOfWeek']].fillna(0).astype(np.float32), 
     format_dummies
 ], axis=1)
 
+# 🔥 CRITICAL: Delete massive dataframes we no longer need and clear RAM
+del trans_df
+del format_dummies
+gc.collect() 
+print("  -> Cleared raw transaction data from RAM.")
+
+# 4. Scale features
+print("  -> Scaling edge features...")
 edge_scaler = StandardScaler()
-scaled_edge_features = edge_scaler.fit_transform(edge_features_df)
+# StandardScaler returns float64 by default, instantly downcast back to float32
+scaled_edge_features = edge_scaler.fit_transform(edge_features_df).astype(np.float32)
+
+# 🔥 CRITICAL: Delete the unscaled dataframe
+del edge_features_df
+gc.collect()
+
+# 5. Convert to tensor
 edge_attr = torch.tensor(scaled_edge_features, dtype=torch.float)
+
+# 🔥 CRITICAL: Delete the numpy array
+del scaled_edge_features
+gc.collect()
+
 print(f"Edge feature matrix shape: {edge_attr.shape}")
 
 # ==========================================
-# 7. BUILD AND SAVE PYG DATA
+# 8. BUILD AND SAVE PYG DATA
 # ==========================================
 print("Constructing PyG Data object...")
 graph_data = Data(
     x=x,
     edge_index=edge_index, 
     edge_attr=edge_attr,
-    y=node_labels
+    y=node_labels,
+    train_mask=train_mask,
+    val_mask=val_mask,
+    test_mask=test_mask
 )
 
 out_path = OUT_DIR / "nexuswatch_graph.pt"

@@ -5,27 +5,15 @@ from pathlib import Path
 from torch_geometric.loader import NeighborLoader
 from sklearn.metrics import accuracy_score, f1_score, precision_score, recall_score
 
-# =====================================================================
-# SMART IMPORT: Tries to automatically find your model class name
-# =====================================================================
-try:
-    from models.gnn_model import NexusGraphSAGE as ActiveModel
-except ImportError:
-    try:
-        from models.gnn_model import NexusGATv2 as ActiveModel
-    except ImportError:
-        raise ImportError(
-            "Could not find 'NexusGraphSAGE' or 'NexusGATv2' in models.gnn_model. "
-            "Please open models/gnn_model.py, check your exact class name, and update this import."
-        )
+# Import the exact class name
+from models.gnn_model import NexusGraph 
 
 def evaluate_all():
     device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
     print(f"🚀 Evaluating on device: {device}\n")
 
+    # Put the loop back in to run through all datasets
     prefixes = ["HI-Small", "HI-Medium", "LI-Small", "LI-Medium", "LI-Large"]
-    
-    # We will test these thresholds to find the best F1 score
     thresholds_to_test = [0.3, 0.4, 0.5, 0.6, 0.7, 0.8, 0.9]
 
     for prefix in prefixes:
@@ -36,6 +24,7 @@ def evaluate_all():
         graph_path = Path(f"./output/{prefix}/nexuswatch_graph.pt")
         model_path = Path(f"./models/gnn_model_{prefix}.pt")
 
+        # Safety check: skip if the graph or model hasn't been generated yet
         if not graph_path.exists() or not model_path.exists():
             print(f"⚠️ Missing files for {prefix}. Skipping...\n")
             continue
@@ -43,18 +32,23 @@ def evaluate_all():
         # 1. Load Data
         graph_data = torch.load(graph_path, weights_only=False).to(device)
         
-        # 2. Initialize Model dynamically
-        model = ActiveModel(in_channels=graph_data.num_node_features).to(device)
+        # 2. Initialize Model (Added edge_dim)
+        model = NexusGraph(
+            in_channels=graph_data.num_node_features,
+            edge_dim=graph_data.num_edge_features
+        ).to(device)
+        
         model.load_state_dict(torch.load(model_path, map_location=device, weights_only=True))
         model.eval()
 
-        # 3. Setup Mini-Batch Inference (OOM Crash Fix)
+        # 3. Setup Mini-Batch Inference
         eval_loader = NeighborLoader(
             graph_data,
-            num_neighbors=[-1, -1, -1],  # -1 means evaluate ALL neighbors
-            batch_size=4096,             # Process 4096 nodes per batch to save VRAM
+            num_neighbors=[-1, -1],  # 2 hops for 2 layers
+            input_nodes=graph_data.test_mask, # Evaluate ONLY on test_mask
+            batch_size=4096,             
             shuffle=False,
-            num_workers=0                # Keep at 0 for Windows
+            num_workers=0                
         )
 
         all_probs = []
@@ -63,17 +57,13 @@ def evaluate_all():
         print("🔄 Running mini-batch inference...")
         with torch.no_grad():
             for batch in eval_loader:
-                # Forward pass: Now correctly passing x, edge_index AND edge_attr
                 logits = model(batch.x, batch.edge_index, batch.edge_attr).squeeze()
-                
-                # Convert raw logits to probabilities
                 probs = torch.sigmoid(logits)
                 
-                # Only keep predictions for the target nodes (ignore the sampled neighbors)
+                # Slice to match the target batch size
                 all_probs.append(probs[:batch.batch_size].cpu())
                 all_labels.append(batch.y[:batch.batch_size].cpu())
 
-        # Concatenate all batches back into a single array
         full_probs = torch.cat(all_probs).numpy()
         full_labels = torch.cat(all_labels).numpy()
 
@@ -91,13 +81,11 @@ def evaluate_all():
             prec = precision_score(full_labels, preds, zero_division=0)
             rec = recall_score(full_labels, preds, zero_division=0)
 
-            # Track the highest F1 Score
             if f1 > best_f1:
                 best_f1 = f1
                 best_thresh = t
                 best_metrics = {"acc": acc, "prec": prec, "rec": rec}
 
-        # 5. Output the Winner
         print(f"\n✅ BEST THRESHOLD for {prefix}: {best_thresh}")
         print(f"🔥 BEST F1 SCORE : {best_f1:.4f}")
         print(f"🎯 Accuracy      : {best_metrics.get('acc', 0):.4f}")
